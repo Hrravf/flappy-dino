@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+  <title>Flappy‑Dino — Mobile Optimized (Button Controls)</title>
+  <style>
+    :root{--bg1:#9AD6FF;--bg2:#6BB8FF;--pipe:#1e8f3e;--ground:#d8b371}
+    html,body{height:100%;margin:0;background:linear-gradient(var(--bg1),var(--bg2));-webkit-font-smoothing:antialiased}
+    .container{display:flex;flex-direction:column;align-items:center;gap:12px;padding:10px}
+
+    /* Responsive canvas wrapper keeps aspect ratio */
+    .game-wrap{width:100%;max-width:720px;position:relative}
+    canvas{width:100%;height:auto;display:block;border-radius:12px;touch-action:none}
+
+    /* on-screen jump button */
+    #jumpBtn{position:absolute;right:14px;bottom:18px;width:78px;height:78px;border-radius:50%;background:linear-gradient(#4aa, #2577e8);border:0;color:#fff;font-weight:700;font-size:18px;box-shadow:0 8px 20px rgba(0,0,0,0.18);display:flex;align-items:center;justify-content:center;touch-action:none}
+
+    /* HUD */
+    .hud{display:flex;gap:8px;justify-content:space-between;width:100%;max-width:720px}
+    .panel{background:rgba(255,255,255,0.95);padding:8px 12px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.12)}
+    .buttons{display:flex;gap:8px;flex:1}
+    button{flex:1;padding:10px;border-radius:8px;border:0;background:#2a7ef0;color:#fff;font-weight:600}
+    input{padding:8px;border-radius:8px;border:1px solid #ddd;width:100%}
+
+    /* Leaderboard list */
+    .leaderboard{background:white;padding:10px;border-radius:8px;width:100%;max-width:720px;box-shadow:0 6px 18px rgba(0,0,0,0.08)}
+    .row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee}
+    .row:last-child{border-bottom:0}
+
+    /* start overlay */
+    .overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+    .panel-start{pointer-events:auto;background:rgba(255,255,255,0.98);padding:18px;border-radius:12px;text-align:center}
+    .small{font-size:13px;color:#666}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="game-wrap">
+      <canvas id="c" width="480" height="720"></canvas>
+
+      <!-- Start overlay -->
+      <div id="overlay" class="overlay">
+        <div id="startPanel" class="panel-start">
+          <h2>Flappy‑Dino</h2>
+          <p class="small">Use the on-screen button to jump. Press Start to begin.</p>
+          <div style="margin-top:10px;display:flex;gap:8px">
+            <button id="startBtn">Start</button>
+            <button id="howBtn">How</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- On-screen jump button (bottom-right) -->
+      <button id="jumpBtn" aria-label="Jump">JUMP</button>
+    </div>
+
+    <div class="hud">
+      <div class="panel">Score: <strong id="score">0</strong></div>
+      <div class="panel">Best: <strong id="best">0</strong></div>
+      <div style="flex:1" class="panel buttons">
+        <button id="leaderBtn">Leaderboard</button>
+        <button id="resetBtn">Reset</button>
+      </div>
+    </div>
+
+    <div id="leaderboard" class="leaderboard" style="display:none">
+      <strong>Top Scores</strong>
+      <div id="rows" style="margin-top:8px"></div>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <input id="name" placeholder="Your name (save after game over)" />
+        <button id="saveBtn">Save</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+/*
+  Mobile-optimized Flappy with on-screen button controls (option B)
+  - Uses pointer events for the button only (no canvas click/ touch flaps)
+  - Canvas click is used only to focus/start the game when overlay is shown
+  - Prevents double-firing by limiting pointer handlers to the button
+*/
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const jumpBtn = document.getElementById('jumpBtn');
+const scoreEl = document.getElementById('score');
+const bestEl = document.getElementById('best');
+const leaderBtn = document.getElementById('leaderBtn');
+const resetBtn = document.getElementById('resetBtn');
+const leaderboardEl = document.getElementById('leaderboard');
+const rowsEl = document.getElementById('rows');
+const nameInput = document.getElementById('name');
+const saveBtn = document.getElementById('saveBtn');
+const overlay = document.getElementById('overlay');
+const startBtn = document.getElementById('startBtn');
+
+// GAME constants and state
+const BASE_W = 480, BASE_H = 720; // internal canvas resolution
+let scale = 1;
+let bird, pipes, score, best, frame, running, gameOver;
+let gravity = 0.45, flapForce = -10, pipeSpeed = 3.2;
+
+function fitCanvas(){
+  const wrapW = Math.min(window.innerWidth - 20, 720);
+  scale = wrapW / BASE_W;
+  canvas.style.width = wrapW + 'px';
+  canvas.style.height = (BASE_H * scale) + 'px';
+}
+window.addEventListener('resize', fitCanvas);
+fitCanvas();
+
+function reset(){
+  bird = {x:120, y:BASE_H/2, r:18, vy:0, rot:0};
+  pipes = [];
+  score = 0; frame = 0; running = false; gameOver = false;
+  best = parseInt(localStorage.getItem('flappy_best')||'0',10);
+  scoreEl.textContent = score; bestEl.textContent = best;
+  showStart(true);
+}
+
+function showStart(yes){ overlay.style.display = yes ? 'flex' : 'none'; }
+
+function spawnPipe(){ const gap = 150; const top = 60 + Math.random()*(BASE_H - 300); pipes.push({x:BASE_W + 40, top, gap, passed:false}); }
+
+function update(){
+  if(!running) return;
+  frame++;
+  bird.vy += gravity; bird.y += bird.vy; bird.rot = Math.max(-0.6, Math.min(0.6, bird.vy/12));
+  if(frame % 90 === 0) spawnPipe();
+  for(const p of pipes) p.x -= pipeSpeed; pipes = pipes.filter(p => p.x > -120);
+
+  for(const p of pipes){ if(!p.passed && p.x + 60 < bird.x){ p.passed = true; score++; scoreEl.textContent = score; if(score>best){ best = score; bestEl.textContent = best; } } }
+
+  if(bird.y + bird.r > BASE_H - 40 || bird.y - bird.r < 0) end();
+  for(const p of pipes){ const hit = bird.x + bird.r > p.x && bird.x - bird.r < p.x + 60; if(hit && (bird.y - bird.r < p.top || bird.y + bird.r > p.top + p.gap)) end(); }
+}
+
+function draw(){
+  ctx.clearRect(0,0,BASE_W,BASE_H);
+  const g = ctx.createLinearGradient(0,0,0,BASE_H); g.addColorStop(0,'#9ad'); g.addColorStop(1,'#6bb8ff'); ctx.fillStyle=g; ctx.fillRect(0,0,BASE_W,BASE_H);
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--pipe') || '#1e8f3e';
+  for(const p of pipes){ ctx.fillRect(p.x,0,60,p.top); ctx.fillRect(p.x,p.top+p.gap,60,BASE_H - (p.top+p.gap) - 40); }
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--ground') || '#d8b371'; ctx.fillRect(0,BASE_H-40,BASE_W,40);
+  ctx.save(); ctx.translate(bird.x,bird.y); ctx.rotate(bird.rot); ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.ellipse(0,0,bird.r*1.05,bird.r,0,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#000'; ctx.beginPath(); ctx.arc(6,-6,3,0,Math.PI*2); ctx.fill(); ctx.restore();
+  ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.font='28px system-ui'; ctx.fillText(String(score), 18, 48);
+  if(gameOver){ ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.font='34px system-ui'; ctx.fillText('GAME OVER', BASE_W/2 - 110, BASE_H/2 - 10); }
+}
+
+function loop(){ update(); draw(); requestAnimationFrame(loop); }
+
+function flap(){ if(gameOver) return; bird.vy = flapForce; running = true; showStart(false); navigator.vibrate?.(20); }
+function end(){ if(!gameOver){ running=false; gameOver=true; if(score>best) localStorage.setItem('flappy_best', String(score)); showStart(true); } }
+
+// Controls: button only for jumping. Canvas click used only to start when overlay visible.
+jumpBtn.addEventListener('pointerdown', e=>{ e.preventDefault(); flap(); }, {passive:false});
+
+// If overlay is visible, allow tapping the canvas to start (but not to flap)
+canvas.addEventListener('pointerdown', e=>{
+  if(overlay.style.display !== 'none'){
+    e.preventDefault(); reset(); running = true; showStart(false);
+  }
+}, {passive:false});
+
+window.addEventListener('keydown', e=>{ if(e.code==='Space') flap(); });
+canvas.addEventListener('contextmenu', e=>e.preventDefault());
+
+// Leaderboard functions
+function loadBoard(){ try{ return JSON.parse(localStorage.getItem('flappy_board')||'[]'); }catch(e){ return []; } }
+function saveBoard(list){ localStorage.setItem('flappy_board', JSON.stringify(list.slice(0,5))); }
+function addScore(name, sc){ const list = loadBoard(); list.push({name:name||'Player', score:sc}); list.sort((a,b)=>b.score-a.score); saveBoard(list); }
+function renderBoard(){ const list = loadBoard(); rowsEl.innerHTML=''; if(list.length===0){ rowsEl.innerHTML='<div class="row">No scores yet</div>'; return; } list.forEach((r,i)=>{ const div=document.createElement('div'); div.className='row'; div.innerHTML=`<div>${i+1}. ${escapeHtml(r.name)}</div><div>${r.score}</div>`; rowsEl.appendChild(div); }); }
+function escapeHtml(s){ return String(s).replace(/[&<>]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[ch])); }
+
+leaderBtn.addEventListener('click', ()=>{ leaderboardEl.style.display = leaderboardEl.style.display==='none' ? 'block' : 'none'; renderBoard(); });
+resetBtn.addEventListener('click', ()=>{ if(confirm('Reset leaderboard and best score?')){ localStorage.removeItem('flappy_board'); localStorage.removeItem('flappy_best'); reset(); renderBoard(); } });
+saveBtn.addEventListener('click', ()=>{ if(!gameOver){ alert('Save scores after game over.'); return; } addScore(nameInput.value, score); nameInput.value=''; renderBoard(); });
+startBtn.addEventListener('click', ()=>{ reset(); running=true; showStart(false); });
+nameInput.addEventListener('keydown', e=>{ if(e.key==='Enter'){ if(!gameOver){ alert('No score to save — play a round first.'); return; } addScore(nameInput.value, score); nameInput.value=''; renderBoard(); } });
+
+reset(); loop();
+</script>
+</body>
+</html>
